@@ -22,7 +22,12 @@ const mongoSanitize = require("express-mongo-sanitize");
 const hpp = require("hpp");
 
 const app = express();
-const base_url = "https://chattrix.xyz";
+
+const allowedOrigins = [
+  "http://localhost:3000",
+  process.env.FRONTEND_URL, // Render will inject this automatically
+];
+
 //Wrapping express in http server
 const server = http.createServer(app);
 
@@ -37,7 +42,7 @@ app.use(
 // This allows  origins from my FRONTEND APP
 app.use(
   cors({
-    origin: [base_url],
+    origin: allowedOrigins,
     credentials: true,
   }),
 );
@@ -46,12 +51,19 @@ app.use(
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
+// app.use(
+//   mongoSanitize({
+//     allowDots: true,
+//     excludedKeys: ["image", "avatar"], // ← skip sanitizing image fields
+//   }),
+// );
+
 app.use(hpp());
 app.use(cookieParser());
 
 const io = new Server(server, {
   cors: {
-    origin: base_url,
+    origin: allowedOrigins,
     methods: ["GET", "POST"],
     credentials: true,
   },
@@ -352,7 +364,7 @@ io.on("connection", (socket) => {
           timeLeft: 62,
           isLoading: false,
           timerId: null,
-          targetScore: gamePath === "words-strike" ? 100 : 60,
+          targetScore: gamePath === "words-strike" ? 10 : 60,
         };
 
         // 2. Save to global state IMMEDIATELY
