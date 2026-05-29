@@ -57,6 +57,9 @@ const io = new Server(server, {
 const userSocketMap = {};
 const gameSessions = {};
 const activeChallenge = {};
+// ⚡ Tracks our 5-second countdown instances per room
+const disconnectTimers = new Map();
+
 app.set("socketio", io);
 app.set("userSocketMap", userSocketMap);
 
@@ -105,7 +108,15 @@ io.on("connection", (socket) => {
         });
         return;
       }
+
       if (session) {
+        // ⚡ CRITICAL: Sabotage and kill the 5s disconnect timer if the player returns in time!
+        if (disconnectTimers.has(roomId)) {
+          clearTimeout(disconnectTimers.get(roomId));
+          disconnectTimers.delete(roomId);
+          io.to(roomId).emit("opponent-reconnected", { userId });
+        }
+
         socket.join(roomId);
 
         if (String(session.player1.id) === String(userId)) {
@@ -530,9 +541,9 @@ io.on("connection", (socket) => {
     }
   });
 
-  // ==========================================
-  // ⚡ INSTANT KILL-SWITCH DISCONNECT HANDLER
-  // ==========================================
+  // =============================================
+  // ⚡ GENTLE 5-SECOND RECOVERY DISCONNECT SYSTEM
+  // =============================================
   socket.on("disconnect", () => {
     const userId = Object.keys(userSocketMap).find(
       (key) => userSocketMap[key] === socket.id,
@@ -543,32 +554,47 @@ io.on("connection", (socket) => {
       io.emit("update-online-users", Object.keys(userSocketMap));
     }
 
-    // Scan for any active game room this player belonged to
+    // Scan for running game rooms that include the disconnected user
     Object.keys(gameSessions).forEach((roomId) => {
       const session = gameSessions[roomId];
 
-      if (session.player1.id === userId || session.player2.id === userId) {
-        // 1. Instantly clear the running interval timer
-        if (session.timerId) {
-          clearInterval(session.timerId);
-        }
-
-        // 2. Fire immediate structural reset back to the opposing user
-        io.to(roomId).emit("opponent-left", {
-          message: "Opponent left or disconnected. Match terminated.",
+      if (
+        String(session.player1.id) === String(userId) ||
+        String(session.player2.id) === String(userId)
+      ) {
+        // Broadcast to the other player that their opponent's connection staggered
+        socket.to(roomId).emit("opponent-disconnected-grace", {
+          userId,
+          message: "Opponent disconnected. Waiting 5s for reconnection...",
         });
 
-        // 3. Force any lingering socket sockets to drop the dynamic channel
-        const room = io.sockets.adapter.rooms.get(roomId);
-        if (room) {
-          room.forEach((sId) => {
-            const s = io.sockets.sockets.get(sId);
-            if (s) s.leave(roomId);
-          });
-        }
+        // Set up our clean 5-second execution countdown
+        const timeoutId = setTimeout(() => {
+          console.log(
+            `Grace period expired for room: ${roomId}. Executing session wipe.`,
+          );
 
-        // 4. Wipe the room clean from local server heap memory immediately
-        delete gameSessions[roomId];
+          if (session.timerId) {
+            clearInterval(session.timerId);
+          }
+
+          io.to(roomId).emit("opponent-left", {
+            message: "Opponent left or disconnected. Match terminated.",
+          });
+
+          const room = io.sockets.adapter.rooms.get(roomId);
+          if (room) {
+            room.forEach((sId) => {
+              const s = io.sockets.sockets.get(sId);
+              if (s) s.leave(roomId);
+            });
+          }
+
+          delete gameSessions[roomId];
+          disconnectTimers.delete(roomId);
+        }, 5000); // 👈 Changed from 15s to exactly 5s grace countdown
+
+        disconnectTimers.set(roomId, timeoutId);
       }
     });
   });
